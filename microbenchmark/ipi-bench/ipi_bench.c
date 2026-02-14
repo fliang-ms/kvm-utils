@@ -7,6 +7,7 @@
 #include <linux/wait.h>
 #include <linux/slab.h>
 #include <linux/random.h>
+#include <linux/delay.h>
 #include "../common/rdtsc.h"
 #include "../common/getns.h"
 
@@ -42,6 +43,9 @@ module_param(lock, int, 0444);
 static int options;
 module_param(options, int, 0444);
 
+static int sleepus = -1;
+module_param(sleepus, int, 0444);
+
 static unsigned long timeoutms = 10000;
 
 static atomic64_t ready_to_run;
@@ -69,6 +73,7 @@ struct bench_args {
 	atomic64_t start;	/* start to run timestamp */
 	atomic64_t finish;	/* finish bench timestamp */
 	atomic64_t ipitime;	/* ipi time */
+	atomic64_t sleeptime;	/* sleep time */
 #ifdef CONFIG_SCHED_INFO
 	atomic64_t run_delay;	/* sched run delay */
 #endif
@@ -94,10 +99,16 @@ static void ipi_bench_gettime(void *info)
 
 static int ipi_bench_one(struct bench_args *ba)
 {
-	unsigned long ipitime = 0, now;
+	unsigned long ipitime = 0, sleeptime = 0, now;
 	int loop, ret, dst = ba->dst;
 
 	for (loop = loops; loop > 0; loop--) {
+		if (sleepus > -1) {
+			atomic64_set((atomic64_t *)&now, gettime());
+			fsleep(sleepus);
+			ipi_bench_gettime(&now);
+			sleeptime += atomic64_read((const atomic64_t *)&now);
+		}
 		atomic64_set((atomic64_t *)&now, gettime());
 		ret = smp_call_function_single(dst, ipi_bench_gettime, &now, wait);
 		if (ret < 0)
@@ -108,6 +119,7 @@ static int ipi_bench_one(struct bench_args *ba)
 	}
 
 	atomic64_set(&ba->ipitime, ipitime);
+	atomic64_set(&ba->sleeptime, sleeptime);
 
 	return 0;
 }
@@ -254,6 +266,7 @@ static inline void ipi_bench_report_single(struct bench_args *ba)
 	unsigned long finish = atomic64_read(&ba->finish);
 	unsigned long ipitime = atomic64_read(&ba->ipitime);
 	unsigned long run_delay = atomic64_read(&ba->run_delay);
+	unsigned long sleeptime = atomic64_read(&ba->sleeptime);
 	unsigned long elapsed = finish - start;
 
 	if (!finish) {
@@ -266,11 +279,11 @@ static inline void ipi_bench_report_single(struct bench_args *ba)
 	}
 
 	printk(KERN_INFO "ipi_bench: CPU [%3d] [NODE%d] -> CPU [%3d] [NODE%d], wait [%d], loops [%d] "
-			"forked [%ld], start [%ld], finish [%ld], elapsed [%ld], ipitime [%ld], run delay [%ld] in ms, "
-			"AVG call [%ld], ipi [%ld] in ns\n",
+			"forked [%ld], start [%ld], finish [%ld], elapsed [%ld], ipitime [%ld], sleeptime [%ld], run delay [%ld] in ms, "
+			"AVG sleep [%ld], call [%ld], ipi [%ld] in ns\n",
 			src, cpu_to_node(src), dst, cpu_to_node(dst), wait, loops,
-			forked / 1000, start / 1000, finish / 1000, elapsed / 1000, ipitime / 1000, run_delay / 1000,
-			elapsed / loops, ipitime / loops);
+			forked / 1000, start / 1000, finish / 1000, elapsed / 1000, ipitime / 1000, sleeptime / 1000, run_delay / 1000,
+			sleeptime / loops, (elapsed - sleeptime) / loops, ipitime / loops);
 }
 
 static inline void ipi_bench_report_all(struct bench_args *ba)

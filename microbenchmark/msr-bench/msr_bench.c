@@ -9,13 +9,16 @@
 /* see intel SDM, or linux source code */
 #define __MSR_IA32_TSCDEADLINE		0x000006e0
 #define __MSR_IA32_POWER_CTL		0x000001fc
+#define MSR_IA32_MPERF				0x000000e7
+#define MSR_IA32_APERF				0x000000e8
 
-#define LOOP 100000
+static int loops = 1000000;
+module_param(loops, int, 0444);
 
 static inline void msr_bench_report(char *tag, unsigned long elapsed)
 {
 	printk(KERN_INFO "msr_bench: %s loop = %d, elapsed = %ld cycles, "
-			"average = %ld cycles\n", tag, LOOP, elapsed, elapsed / LOOP);
+			"average = %ld cycles\n", tag, loops, elapsed, elapsed / loops);
 }
 
 static inline int wrmsr_bench(char *tag, unsigned int msr, unsigned long val)
@@ -32,15 +35,30 @@ static inline int wrmsr_bench(char *tag, unsigned int msr, unsigned long val)
 				"benchmark asm instrucion\n", tag);
 
 		/* bench loop */
-		for (loop = LOOP; loop > 0; loop--)
+		for (loop = loops; loop > 0; loop--)
 			ins_wrmsrl(__MSR_IA32_TSCDEADLINE, val);
 	} else {
 		printk(KERN_INFO "msr_bench: wrmsr %s fail, "
 				"benchmark native safe API\n", tag);
 
 		/* bench loop */
-		for (loop = LOOP; loop > 0; loop--)
+		for (loop = loops; loop > 0; loop--)
 			native_write_msr_safe(msr, low, high);
+	}
+
+	return 0;
+}
+
+static inline int rdmsr_bench(char *tag, unsigned int msr)
+{
+	int loop, err;
+	u64 val;
+
+	/* bench loop */
+	for (loop = loops; loop > 0; loop--) {
+		val = native_read_msr_safe(msr, &err);
+		if (err)
+			return err;
 	}
 
 	return 0;
@@ -84,6 +102,21 @@ static int msr_bench_init(void)
 
 		elapsed = ins_rdtsc() - starttime;
 		msr_bench_report("MSR_IA32_TSCDEADLINE", elapsed);
+	}
+
+	if (cpu_feature_enabled(X86_FEATURE_APERFMPERF)) {
+		starttime = ins_rdtsc();
+		if (rdmsr_bench("MSR_IA32_MPERF", MSR_IA32_MPERF) == 0) {
+			
+			elapsed = ins_rdtsc() - starttime;
+			msr_bench_report("MSR_IA32_MPERF", elapsed);
+		}
+		starttime = ins_rdtsc();
+		if (rdmsr_bench("MSR_IA32_APERF", MSR_IA32_APERF) == 0) {
+			
+			elapsed = ins_rdtsc() - starttime;
+			msr_bench_report("MSR_IA32_APERF", elapsed);
+		}
 	}
 
 	printk(KERN_INFO "msr_bench: %s finish\n", __func__);
